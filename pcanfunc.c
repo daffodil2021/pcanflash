@@ -91,7 +91,7 @@ int query_modules(int s, struct can_frame *modules)
 			    (frame.can_dlc != 8))
 			{
 				fprintf(stderr, "received wrong module query!\n");
-				exit(1);
+				//exit(1);
 			}
 			my_id = frame.data[1] & 0xF;
 
@@ -303,12 +303,12 @@ uint8_t get_status(int s, uint8_t module_id, struct can_frame *cf)
 void write_block(int s, uint8_t module_id, uint32_t offset, uint32_t blksz, uint8_t *buf, uint32_t alternating_xor_flip)
 {
 	struct can_frame frame;
-	int i, j;
+	int i, j, buf_cnt;
 	uint8_t status;
 	uint16_t csum;
 
-	for (i = 0, csum = 0; i < BLKSZ; i++)
-		csum = (csum + *(buf +i)) & 0xFFFFU;
+	for (i = 0, csum = 0; i < blksz; i++)
+		csum = (csum + *(buf + i)) & 0xFFFFU;
 
 	printf ("writing non empty block at offset 0x%X with csum 0x%04X\n",
 		(unsigned int)offset, (unsigned int)csum);
@@ -320,7 +320,7 @@ void write_block(int s, uint8_t module_id, uint32_t offset, uint32_t blksz, uint
 		exit(1);
 	}
 	
-	set_blocksize(s, module_id, BLKSZ);
+	set_blocksize(s, module_id, blksz);
 	status = get_status(s, module_id, NULL);
 	if ((status & (SET_STARTADDR | SET_LENGTH)) != (SET_STARTADDR | SET_LENGTH)) {
 		fprintf(stderr, "flash2 - wrong status %02X!\n", status);
@@ -330,13 +330,19 @@ void write_block(int s, uint8_t module_id, uint32_t offset, uint32_t blksz, uint
 	frame.can_id = CAN_ID;
 	frame.can_dlc = 8;
 
-	for (i = 0; i < BLKSZ; i += 8) {
+	for (i = 0, buf_cnt = 0; i < blksz + 3*8; i += 8) { // always writes 11
 
-		for (j = 0; j < 8; j++)
-			frame.data[j] = *(buf + i + j);
+		frame.data[0] = 0x7F;
+		frame.data[1] = 0xFF;
+
+		for (j = 2; j < 8; j++) {
+			frame.data[j] = *(buf + buf_cnt);
+			buf_cnt++;
+		}
+
 
 		if ((i & 8) && (alternating_xor_flip)) {
-			for (j = 0; j < 8; j++)
+			for (j = 2; j < 8; j++)
 				frame.data[j] ^= 0xFF;
 		}
 

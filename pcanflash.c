@@ -250,7 +250,7 @@ int main(int argc, char **argv)
 			}
 
 			/* write non-empty block */
-			write_block(s, module_id, foffset, BLKSZ, buf, alternating_xor_flip);
+			write_block(s, module_id, foffset + 0xFF0000, BLKSZ, buf, alternating_xor_flip);
 		}
 
 		if (feof(infile))
