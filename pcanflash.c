@@ -60,11 +60,13 @@ void print_usage(char *prg)
 
 int main(int argc, char **argv)
 {
-	static uint8_t buf[BLKSZ+2];
+	uint8_t *buf;
+	size_t blksz;
+	size_t foffset_start;
 	struct sockaddr_can addr;
 	static struct can_frame modules[16];
-        struct can_filter rfilter;
-	int s; /* CAN_RAW socket */
+	struct can_filter rfilter;
+	int s; // CAN_RAW socket
 	static FILE *infile;
 	static int query;
 	int module_id = NO_MODULE_ID;
@@ -102,29 +104,29 @@ int main(int argc, char **argv)
 		}
 	}
 
-        if ((argc - optind) != 1 || (infile && query) || (!(infile || query))) {
-                print_usage(basename(argv[0]));
-                exit(0);
-        }
+	if ((argc - optind) != 1 || (infile && query) || (!(infile || query))) {
+		print_usage(basename(argv[0]));
+		exit(0);
+	}
 
-        if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
-                perror("socket");
-                return 1;
-        }
+	if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
+		perror("socket");
+		return 1;
+	}
 
-        /* set single CAN ID raw filters for RX and TX frames */
+	/* set single CAN ID raw filters for RX and TX frames */
 	rfilter.can_id   = CAN_ID & CAN_SFF_MASK;
 	rfilter.can_mask = (CAN_SFF_MASK|CAN_EFF_FLAG|CAN_RTR_FLAG);
 
-        setsockopt(s, SOL_CAN_RAW, CAN_RAW_FILTER, &rfilter, sizeof(rfilter));
+	setsockopt(s, SOL_CAN_RAW, CAN_RAW_FILTER, &rfilter, sizeof(rfilter));
 
-        addr.can_family = AF_CAN;
-        addr.can_ifindex = if_nametoindex(argv[optind]);
+	addr.can_family = AF_CAN;
+	addr.can_ifindex = if_nametoindex(argv[optind]);
 
-        if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-                perror("bind");
-                return 1;
-        }
+	if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		perror("bind");
+		return 1;
+	}
 
 	entries = query_modules(s, modules);
 	if (!entries) {
@@ -166,7 +168,11 @@ int main(int argc, char **argv)
 			}
 		} else {
 			printf("\nmultiple modules found - please provide module id : ");
-			scanf("%d", &module_id);
+			int ret = scanf("%d", &module_id);
+			if (ret < 0) {
+				fprintf(stderr, "\ninput error!\n\n");
+				exit(1);
+			}
 			module_id &= 0xF;
 		}
 	}
@@ -185,6 +191,16 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
+	blksz = blocksize(hw_type);
+	foffset_start = flash_offset(hw_type);
+
+	const size_t buf_size = sizeof(uint8_t) * (blksz+2); // +2 to leave some room for CRC
+	buf = malloc(buf_size);
+	if (buf == NULL) {
+		fprintf(stderr, "\ncould not allocate memory for buffer!\n\n");
+		exit(1);
+	}
+
 	printf("\nflashing module id : %d\n", module_id);
 
 	if (hw_flags(hw_type, SWITCH_TO_BOOTLOADER)) { /* PPCAN mode modules */
@@ -199,7 +215,8 @@ int main(int argc, char **argv)
 	printf("\nerasing flash sectors:\n");
 
 	entries = num_flashblocks(hw_type);
-	if (!(entries)) {
+
+	if (entries == 0) {
 		fprintf(stderr, "no flashblocks found for hardware type %d (%s)!\n",
 			hw_type, hw_name(hw_type));
 		exit(1);
@@ -213,23 +230,22 @@ int main(int argc, char **argv)
 	crc_start = crc_startpos(hw_type);
 
 	while (1) {
-
 		if (fseek(infile, foffset, SEEK_SET))
 			break;
 
-		memset(&buf, 0xFF, sizeof(buf));
-		fread(buf, 1, BLKSZ, infile);
+		memset(buf, 0xFF, buf_size);
+		fread(buf, 1, blksz, infile);
 
-		for (i = 0; i < BLKSZ; i++) {
+		for (i = 0; i < blksz; i++) {
 			if (buf[i] != EMPTY)
 				break;
 		}
 
 		/* non-empty block (not all bytes are EMPTY / 0xFFU) */
-		if (i != BLKSZ) {
+		if (i != blksz) {
 
 			/* check whether we need to patch the CRC array */
-			if ((crc_start) && (crc_start >= foffset) && (crc_start < foffset + BLKSZ)) {
+			if ((crc_start) && (crc_start >= foffset) && (crc_start < foffset + blksz)) {
 
 				/* access crc_array */
 				ca = (crc_array_t *)&buf[crc_start - foffset];
@@ -250,13 +266,13 @@ int main(int argc, char **argv)
 			}
 
 			/* write non-empty block */
-			write_block(s, module_id, foffset + 0xFF0000, BLKSZ, buf, alternating_xor_flip);
+			write_block(s, module_id, foffset + foffset_start, blksz, buf, alternating_xor_flip, hw_name(hw_type));
 		}
 
 		if (feof(infile))
 			break;
 
-		foffset += BLKSZ;
+		foffset += blksz;
 
 	} /* while (1) */
 

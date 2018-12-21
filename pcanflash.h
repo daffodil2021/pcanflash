@@ -27,9 +27,6 @@
 
 #include <stdint.h>
 
-//#define BLKSZ 512 // for Router
-#define BLKSZ 64 // for MicroMod
-
 #define NO_MODULE_ID 16
 #define CAN_ID 0x7E7
 

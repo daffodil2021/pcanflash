@@ -39,15 +39,18 @@
 #include <linux/can/raw.h>
 
 #include "pcanflash.h"
+#include "pcanhw.h"
+#include "pcanfunc.h"
 
 int query_modules(int s, struct can_frame *modules)
 {
 	int entries = 0;
 	int have_rx = 1;
-	int my_id, ret;
+	int module_id, ret;
 	fd_set rdfs;
         struct timeval tv;
 	struct can_frame frame;
+	const char *hwname;
 
 	/* send module query request */
 	memset(&frame, 0, sizeof(struct can_frame));
@@ -64,7 +67,6 @@ int query_modules(int s, struct can_frame *modules)
         }
 
 	while (have_rx) {
-
 		have_rx = 0;
 		FD_ZERO(&rdfs);
 		FD_SET(s, &rdfs);
@@ -85,22 +87,34 @@ int query_modules(int s, struct can_frame *modules)
 				exit(1);
 			}
 
+			module_id = frame.data[1] & 0xF;
+			
+			struct can_frame cf;
+			get_status(s, module_id, &cf);
+			hwname = hw_name(cf.data[3]);
+
+			/*
 			if ((frame.data[0] & 0xDF != 0xC6) ||
 			    ((frame.data[1] & 0xF0) != 0x40) ||
 			    (frame.data[2] != 0x06) ||
 			    (frame.can_dlc != 8))
 			{
-				fprintf(stderr, "received wrong module query!\n");
-				//exit(1);
-			}
-			my_id = frame.data[1] & 0xF;
-
-			if ((modules + my_id)->can_id)
+			*/
+			if (
+				strcmp(hwname, "PCAN-Router") != 0 &&
+				strcmp(hwname, "PCAN-Micromod") != 0
+			)
 			{
-				fprintf(stderr, "received second module with ID %d!\n", my_id);
+				fprintf(stderr, "received wrong module query!\n");
 				exit(1);
 			}
-			memcpy(modules + my_id, &frame, sizeof(struct can_frame));
+
+			if ((modules + module_id)->can_id)
+			{
+				fprintf(stderr, "received second module with ID %d!\n", module_id);
+				exit(1);
+			}
+			memcpy(modules + module_id, &frame, sizeof(struct can_frame));
 			entries++;
 		}
 	}
@@ -300,7 +314,7 @@ uint8_t get_status(int s, uint8_t module_id, struct can_frame *cf)
 	exit(1);
 }
 
-void write_block(int s, uint8_t module_id, uint32_t offset, uint32_t blksz, uint8_t *buf, uint32_t alternating_xor_flip)
+void write_block(int s, uint8_t module_id, uint32_t offset, uint32_t blksz, uint8_t *buf, uint32_t alternating_xor_flip, const char *hw_name)
 {
 	struct can_frame frame;
 	int i, j, buf_cnt;
@@ -330,25 +344,40 @@ void write_block(int s, uint8_t module_id, uint32_t offset, uint32_t blksz, uint
 	frame.can_id = CAN_ID;
 	frame.can_dlc = 8;
 
-	for (i = 0, buf_cnt = 0; i < blksz + 3*8; i += 8) { // always writes 11
+	if (strcmp(hw_name, "PCAN-Micromod") == 0) {
+		for (i = 0, buf_cnt = 0; i < blksz + 3*8; i += 8) { // always send 11 messages
+			frame.data[0] = 0x7F;
+			frame.data[1] = 0xFF;
 
-		frame.data[0] = 0x7F;
-		frame.data[1] = 0xFF;
+			for (j = 2; j < 8; j++) {
+				frame.data[j] = *(buf + buf_cnt);
+				buf_cnt++;
+			}
 
-		for (j = 2; j < 8; j++) {
-			frame.data[j] = *(buf + buf_cnt);
-			buf_cnt++;
+			if ((i & 8) && (alternating_xor_flip)) {
+				for (j = 2; j < 8; j++)
+					frame.data[j] ^= 0xFF;
+			}
+
+			if (write(s, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
+				perror("write");
+				exit(1);
+			}
 		}
+	} else {
+		for (i = 0; i < blksz; i += 8) {
+			for (j = 0; j < 8; j++)
+				frame.data[j] = *(buf + i + j);
 
+			if ((i & 8) && (alternating_xor_flip)) {
+				for (j = 0; j < 8; j++)
+					frame.data[j] ^= 0xFF;
+			}
 
-		if ((i & 8) && (alternating_xor_flip)) {
-			for (j = 2; j < 8; j++)
-				frame.data[j] ^= 0xFF;
-		}
-
-		if (write(s, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
-			perror("write");
-			exit(1);
+			if (write(s, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
+				perror("write");
+				exit(1);
+			}
 		}
 	}
 
@@ -385,7 +414,7 @@ void erase_block(int s, uint8_t module_id, uint32_t startaddr, uint32_t blksz)
 {
 	uint8_t status;
 
-	printf ("erasing block at startaddr 0x%06X with block size 0x%06X\n",
+	printf("erasing block at startaddr 0x%06X with block size 0x%06X\n",
 		(unsigned int)startaddr, (unsigned int)blksz);
 
 	set_startaddress(s, module_id, startaddr);
